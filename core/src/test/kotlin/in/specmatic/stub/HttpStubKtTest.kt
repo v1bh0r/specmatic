@@ -10,25 +10,17 @@ import `in`.specmatic.core.pattern.parsedValue
 import `in`.specmatic.core.utilities.exceptionCauseMessage
 import `in`.specmatic.core.value.*
 import `in`.specmatic.mock.ScenarioStub
-import `in`.specmatic.stub.report.StubEndpoint
-import `in`.specmatic.stub.report.StubUsageReportJson
-import `in`.specmatic.stub.report.StubUsageReportOperation
-import `in`.specmatic.stub.report.StubUsageReportRow
 import `in`.specmatic.stubResponse
 import `in`.specmatic.test.HttpClient
 import io.mockk.InternalPlatformDsl.toStr
-import kotlinx.serialization.decodeFromString
-import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
-import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.fail
-import java.io.File
 import java.security.KeyStore
 import java.util.*
 import java.util.function.Consumer
@@ -75,6 +67,110 @@ paths:
             val response = stub.client.execute(HttpRequest("GET", "/data"))
             assertThat(response.headers["X-Specmatic-Type"]).isEqualTo("random")
         }
+    }
+
+    @Test
+    fun `delete transient stub`() {
+        val contract = OpenApiSpecification.fromYAML(
+            """
+openapi: "3.0.1"
+info:
+  title: "Contract for the service"
+  version: "1"
+paths:
+  /service/api/v1/templates/list:
+    get:
+      summary: "Should be able to get templates"
+      parameters: # Workaround for local testing https://github.com/znsio/specmatic/issues/577
+        - name: Authorization
+          in: header
+          required: true
+          schema:
+            type: string
+            enum:
+              [
+                "Bearer token",
+              ]
+      responses:
+        "200":
+          description: "An array of templates"
+          content:
+            application/json:
+              schema: 
+                ${'$'}ref: '#/components/schemas/ArrayOfTemplates'
+              examples:
+                FETCH_TEMPLATES_SUCCESS:
+                  value:
+                  - uuid: 16c47839-da6d-4c8d-9c66-5dcb8d8f52bf
+                    displayName: Hello World!
+                  - uuid: 05e858d9-4ed1-45f9-b90c-7428be6154c1
+                  - uuid: fb6ce017-38d7-4b2c-b209-8211852d7730
+                  - uuid: 8da66efb-c5bb-4e6d-ad83-2546b3694f2a
+                  - uuid: ec69971b-2afc-4bf9-bc49-e22c08ed99a4
+components:
+  schemas:
+    ArrayOfTemplates: # Schema name
+      type: array
+      items:
+        ${'$'}ref: '#/components/schemas/Template'
+    Template: # Schema name
+      type: object
+      required:
+        - "uuid"
+        - "displayName"
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+      example:   # Object-level example
+        uuid: 16c47839-da6d-4c8d-9c66-5dcb8d8f52bf
+        displayName: Hello World!
+        """.trimIndent(), ""
+        ).toFeature()
+
+        HttpStub(contract).use { stub ->
+            stub.setExpectation("""
+                {
+                    "http-request": {
+                        "method": "GET",
+                        "path": "/service/api/v1/templates/list",
+                        "headers": {
+                            "Authorization": "Bearer token"
+                        }
+                    },
+                    "http-response": {
+                        "status": 200,
+                        "body": [
+                            {
+                                "uuid": "16c47839-da6d-4c8d-9c66-5dcb8d8f52bf",
+                                "displayName": "John Doe"
+                            }
+                        ],
+                        "status-text": "OK"
+                    },
+                    "http-stub-id": "123"
+                }
+            """.trimIndent())
+
+            val response = stub.client.execute(HttpRequest("GET", "/service/api/v1/templates/list", headers = mapOf("Authorization" to "Bearer token")))
+            assertThat(response.headers["X-Specmatic-Type"]).isNotEqualTo("random")
+            assertThat(response.body.toStringLiteral()).isEqualTo("""
+                [
+                    {
+                        "uuid": "16c47839-da6d-4c8d-9c66-5dcb8d8f52bf",
+                        "displayName": "John Doe"
+                    }
+                ]
+            """.trimIndent())
+
+            stub.client.execute(HttpRequest("DELETE", "/_specmatic/http-stub/123"))
+
+            val responseAfterDeletion = stub.client.execute(HttpRequest("GET", "/service/api/v1/templates/list", headers = mapOf("Authorization" to "Bearer token")))
+            assertThat(responseAfterDeletion.headers["X-Specmatic-Type"]).isEqualTo("random")
+        }
+
     }
 
     @Test
